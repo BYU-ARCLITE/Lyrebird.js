@@ -1,0 +1,1 @@
+Lyrebirds are ground-dwelling Australian birds noted for their ability, much like an audio tape recorder, to memorize and repeat natural (e.g., the calls of other animals) and artificial (e.g., the buzz of a chainsaw) sounds that they hear in their environment. Lyrebird.js is a framework & library for recording audio files in pure, standards-compliant, vanilla JavaScript.

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<title>Audio Recorder Test</title>
+	<style type="text/css">
+		ul { list-style: none; }
+		#recordingslist audio { display: block; margin-bottom: 10px; }
+	</style>
+	<script src="Encoder.js"></script>
+	<script src="Recorder.js"></script>
+</head>
+<body>
+  <h1>Record to MP3 Test</h1>
+
+  <button id="start">record</button>
+  <button id="stop" disabled="">stop</button>
+  <h2>Recordings</h2>
+  <ul id="reclist"></ul>
+  
+  <h2>Log</h2>
+  <pre id="log"></pre>
+<script>
+MP3Encoder.LAME_URI = "http://localhost/AudioRecord/libmp3lame.js";
+
+var stopper = {},
+	start = document.getElementById('start'),
+	stop = document.getElementById('stop'),
+	log = document.getElementById('log'),
+	reclist = document.getElementById('reclist');
+
+function __log(e, data) {
+	log.innerHTML += "\n" + e + " " + (data || '');
+}	
+
+stop.addEventListener('click',stopper,false);
+start.addEventListener('click',function(){
+	start.disabled = true;
+	(new AudioRecorder(MP3Encoder,{channels:1})).then(function(recorder){
+		__log('Recorder initialised.');
+		stop.disabled = false;
+		recorder.record();
+		stopper.handleEvent = function(){
+			__log('Stopped recording.');
+			stop.disabled = true;
+			recorder.pause();
+			recorder.getRecording().then(download);
+			start.disabled = false;
+		};
+	},function(err){
+		start.disabled = false;
+		__log(err.message);
+		console.log(err.message);
+		console.log(err.stack);
+	});
+},false);
+
+function download(blob){
+	var li, link, name;
+	
+	__log("Done converting to Mp3");
+	name = 'audio_recording_' + new Date().getTime() + '.mp3';
+	
+    link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = name;
+	link.innerHTML = name;
+	li = document.createElement('li');
+	li.appendChild(link);
+	reclist.appendChild(li);
+}
+</script>
+</body>
+</html>
