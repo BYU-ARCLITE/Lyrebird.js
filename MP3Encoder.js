@@ -11,61 +11,46 @@ var MP3Encoder = (function(){
 	function dispatchMessages(e){
 		var data = e.data;
 		switch(data.cmd){
-		case 'reset':
-			this.buffers = [];
-			this.pq.shift().resolve(this);
-			break;
 		case 'data':
-			this.buffers.push(data.mp3data);
+			if(!this.stream){ this.buffers.push(data.mp3data); }
 			this.pq.shift().resolve(this);
 			break;
 		case 'end':
-			//Why copy buffers ourselves when the Blob constructor will do it for us?
-			this.buffers.push(data.mp3data);
-			this.pq.shift().resolve(new Blob(this.buffers,{type: 'audio/mp3'}));
+			if(this.stream){
+				this.pq.shift().resolve([data.mp3data]);
+			}else{
+				//Why copy buffers ourselves when the Blob constructor will do it for us?
+				this.buffers.push(data.mp3data);
+				this.pq.shift().resolve([data.mp3data, new Blob(this.buffers,{type: 'audio/mp3'})]);
+			}
 			this.buffers = [];
 		}
 	}
 	
-	function Encoder(opts){ //channels, mode, samplerate, bitrate
-		var worker = new Worker(workerURL),
-			that = this;
-		
-		if(typeof opts !== 'object'){ opts = {}; }
+	function EncoderWorker(encoder){
+		var that = this,
+			worker = new Worker(workerURL);
+		worker.addEventListener('message',dispatchMessages.bind(this),false);
+		worker.addEventListener('error',function(e){
+			try{ that.pq.shift().reject(e); }
+			catch(_){}
+		},false);
+		worker.postMessage({
+			cmd: 'init',
+			url: MP3Encoder.LAME_URI,
+			channels: encoder.channels,
+			samplerate: encoder.samplerate,
+			bitrate: encoder.bitrate
+		});
 		
 		this.worker = worker;
-		this.stereo = opts.channels === 1?false:true;
+		this.stream = encoder.stream;
 		this.buffers = [];
 		this.pq = [];
-		this.terminated = false;
-		
-		worker.addEventListener('message',dispatchMessages.bind(this),false);
-		worker.addEventListener('error',function(e){ that.pq.shift().reject(e); },false);
-		worker.postMessage({
-			cmd: 'import',
-			url: Encoder.LAME_URI
-		});
-		return new Promise(function(resolve, reject){
-			that.pq.push({
-				resolve: resolve,
-				reject: reject
-			});
-			worker.postMessage({
-				cmd: 'init',
-				config: {
-					mode: opts.mode || 1, //Lame.JOINT_STEREO
-					channels: opts.channels === 1?1:2,
-					samplerate: +opts.samplerate || 44100,
-					bitrate: +opts.bitrate || 128
-				}
-			});
-		});	
 	}
 	
-	Encoder.LAME_URI =	location.protocol + "//" + location.hostname +
-						(location.port && ":" + location.port) + "/js/libmp3lame.js";
-
-	function sendMsg(that, msg){
+	EncoderWorker.prototype.msg = function(msg){
+		var that = this;
 		return new Promise(function(resolve, reject){
 			that.worker.postMessage(msg);
 			that.pq.push({
@@ -73,64 +58,77 @@ var MP3Encoder = (function(){
 				reject: reject
 			});
 		});
-	}
-	
-	Encoder.prototype.reset = function(){
-		return sendMsg(this, {cmd: 'reset'});
 	};
 	
-	Encoder.prototype.encode = function(channels){
-		return sendMsg(this, {
+	EncoderWorker.prototype.terminate = function(){
+		this.pq.forEach(function(p){ p.reject(new Error('Worker Terminated.')); });
+		this.worker.terminate();
+	};
+	
+	function MP3Encoder(opts){ //channels, samplerate, bitrate, stream		
+		if(typeof opts !== 'object'){ opts = {}; }
+
+		this.stream = !!opts.stream;
+		this.bitrate = 32;
+		this.samplerate = +opts.samplerate || 44100;
+		this.channels = opts.channels === 1?1:2;
+		this.worker = new EncoderWorker(this);
+	}
+	
+	MP3Encoder.LAME_URI =	location.protocol + "//" + location.hostname +
+						(location.port && ":" + location.port) + "/js/libmp3lame.js";
+	
+	MP3Encoder.prototype.reset = function(hard){
+		if(hard){ this.worker.terminate(); }
+		this.worker = new EncoderWorker(this);
+	};
+	
+	MP3Encoder.prototype.encode = function(channels){
+		return this.worker.msg({
 			cmd: 'encode',
-			channels: channels.slice(0,this.stereo?2:1)
+			channels: channels.slice(0,this.channels)
 		});
 	};
 	
-	Encoder.prototype.end = function(){
-		return sendMsg(this, {cmd: 'end'});
-	};
-	
-	Encoder.prototype.destroy = function(){
-		this.worker.terminate();
-		this.pq.forEach(function(p){ p.reject(new Error('encoder terminated')); });
-		this.terminated = true;
+	MP3Encoder.prototype.end = function(){
+		return this.worker.msg({cmd: 'end'});
 	};
 
 	function workerFn(){
 		"use strict";
-		var codec, encode, config;
+		var codec, encode, channels,
+			samplerate, bitrate;
 		
-		function monoEncode(codec,chan){
-			return Lame.encode_buffer_ieee_float(codec, chan[0], chan[0]).data.buffer;
+		function monoEncode(mp3codec,chans){
+			return Lame.encode_buffer_ieee_float(mp3codec, chans[0], chans[0]).data.buffer;
 		}
 
-		function stereoEncode(codec,chan){
-			return Lame.encode_buffer_ieee_float(codec, chan[0], chan[1]).data.buffer;
+		function stereoEncode(mp3codec,chans){
+			return Lame.encode_buffer_ieee_float(mp3codec, chans[0], chans[1]).data.buffer;
 		}
 		
-		function newEncoder(config){
+		function newEncoder(){
 			var mp3codec = Lame.init();
-			Lame.set_mode(mp3codec, config.mode);
-			Lame.set_num_channels(mp3codec, config.channels);
-			Lame.set_out_samplerate(mp3codec, config.samplerate);
-			Lame.set_bitrate(mp3codec, config.bitrate);
+			Lame.set_mode(mp3codec, channels === 1?Lame.MONO:Lame.JOINT_STEREO);
+			Lame.set_num_channels(mp3codec, channels);
+			Lame.set_in_samplerate(mp3codec, samplerate);
+			Lame.set_out_samplerate(mp3codec, samplerate);
+			Lame.set_bitrate(mp3codec, bitrate);
 			Lame.init_params(mp3codec);
 			return mp3codec;
 		}
 
-		self.onmessage = function(e){
+		self.addEventListener('message',function(e){
 			var data = e.data,
 				mp3data;
 			switch(data.cmd){
-			case 'import':
-				importScripts(data.url);
-				break;
 			case 'init':
-				config = data.config;
-				encode = config.channels === 1?monoEncode:stereoEncode;
-			case 'reset':
-				codec = newEncoder(config);
-				self.postMessage({cmd: 'reset'});
+				importScripts(data.url);
+				channels = data.channels;
+				samplerate = data.samplerate;
+				bitrate = data.bitrate;
+				encode = channels === 1?monoEncode:stereoEncode;
+				codec = newEncoder();
 				break;
 			case 'encode':
 				mp3data = encode(codec, data.channels);
@@ -140,11 +138,11 @@ var MP3Encoder = (function(){
 				mp3data = Lame.encode_flush(codec).data.buffer;
 				self.postMessage({cmd: 'end', mp3data: mp3data},[mp3data]);
 				Lame.close(codec);
-				codec = newEncoder(config);
+				codec = newEncoder();
 				break;
 			}
-		};
+		},false);
 	}
 
-	return Encoder;
+	return MP3Encoder;
 }());

@@ -1,93 +1,109 @@
 var AudioRecorder = (function(){
 
-	var getUserMedia = navigator.getUserMedia ||
-						navigator.webkitGetUserMedia ||
-						navigator.mozGetUserMedia,
-		AudioContext = window.AudioContext ||
-						window.webkitAudioContext;
-
-	function Recorder(enc_cons,opts){
-		var actx = new AudioContext(),
-			stereo, that = this;
+	var arrayTypes = {
+		8: Int8Array,
+		16: Int16Array,
+		32: Float32Array,
+		64: Float64Array
+	};
+	
+	function Recorder(sp,ep){
+		var that = this;
 		
-		if(typeof opts !== 'object'){ opts = {}; }
-		
-		stereo = (opts.channels !== 1);
+		this.events = {};
 		this.recording = false;
-		this.stopped = false;
-		this.flushed = false;
+		this.source = null;
 		this.encoder = null;
+		this.queued = 1;
+		this.finished = 0;
 		
-		return Promise.all([
-			new enc_cons({
-				channels: opts.channels,
-				mode: opts.mode,
-				bitrate: 32, //WebAudio gives us samples in float32 arrays 
-				samplerate: actx.sampleRate
-			}),
-			new Promise(function(resolve, reject){
-				getUserMedia.call(navigator,{ video: false, audio: true }, resolve, reject);
-			})
-		]).then(function(arr){
-			var encoder = arr[0],
-				stream = arr[1],
-				source, node;
-				
-			that.encoder = encoder;
-			source = actx.createMediaStreamSource(stream);
-
-			if(stereo){
-				node = actx.createScriptProcessor(+opts.bufferSize || 4096, 2, 1);
-				node.onaudioprocess = function(e){
-					if(!that.recording){ return; }
-					var left = e.inputBuffer.getChannelData(0),
-						right = e.inputBuffer.getChannelData(1);
-					that.flushed = false;
-					encoder.encode([left,right])
-					.then(null,opts.error);
-				};
-			}else{
-				node = actx.createScriptProcessor(+opts.bufferSize || 4096, 1, 1);
-				node.onaudioprocess = function(e){
-					if(!that.recording){ return; }
-					that.flushed = false;
-					encoder.encode([e.inputBuffer.getChannelData(0)])
-					.then(null,opts.error);
-				};
+		return Promise.all([sp, ep]).then(function(arr){
+			var dc,
+				source = arr[0],
+				encoder = arr[1];
+			if(source.channels !== encoder.channels){
+				throw new Error("Channel Mismatch.");
 			}
-			source.connect(node);
-			node.connect(actx.destination);
+			if(!arrayTypes.hasOwnProperty(source.bitrate)){
+				throw new Error("Invalid Source Bitrate.");
+			}
+			if(!arrayTypes.hasOwnProperty(encoder.bitrate)){
+				throw new Error("Invalid Encoder Bitrate.");
+			}
+			//TODO: Automatically handle samplerate differences with resampler
+			if(source.samplerate !== encoder.samplerate){
+				throw new Error("Sample Rate Mismatch.");
+			}
+			//bit depth conversion
+			dc = source.bitrate === encoder.bitrate?
+							function(buf){ return buf; }:
+							arrayTypes[encoder.bitrate];
+
+			source.pipe(function(inputs){
+				if(!that.recording){ return; }
+				that.queued++;
+				encoder.encode(inputs.map(dc))
+				.then(function(data){
+					that.finished++;
+					that.emit('data',data);
+				},function(err){
+					that.emit('error',err);
+				});
+			});
 			
-			that.stop = function(){
-				this.recording = false;
-				this.stopped = true;
-				stream.stop(); //minimum to make the tab recording icon go away
-				//source.disconnect();
-				//node.disconnect();
-			};
+			that.source = source;
+			that.encoder = encoder;
 			return that;
 		});
 	}
 
+	Recorder.prototype.on = function(ename, handler){
+		if(!this.events.hasOwnProperty(ename)){
+			this.events[ename] = [handler];
+		}else{
+			this.events[ename].push(handler);
+		}
+	};
+	
+	Recorder.prototype.off = function(ename, handler){
+		var i, evlist = this.events[ename];
+		if(!evlist){ return; }
+		i = evlist.indexOf(handler);
+		if(~i){ evlist.splice(i,1); }
+	};
+	
+	Recorder.prototype.emit = function(ename, obj){
+		var evlist = this.events[ename];
+		if(!evlist){ return; }
+		evlist.forEach(function(h){ h.call(this, obj); }, this);
+	};
+	
 	Recorder.prototype.record = function(){
-		if(this.stopped){ throw new Error("Cannot use stopped recorder."); }
 		this.recording = true;
 	};
+	
 	Recorder.prototype.pause = function(){
-		if(this.stopped){ throw new Error("Cannot use stopped recorder."); }
 		this.recording = false;
 	};
-	Recorder.prototype.reset = function(){
-		if(this.stopped){ throw new Error("Cannot use stopped recorder."); }
+	
+	Recorder.prototype.reset = function(hard){
 		this.recording = false;
-		this.encoder.reset();
-		//if(this.flushed){ this.encoder.reset(); }
-		//else{ this.encoder.destroy(); //make new encoder}
+		this.queued = 1;
+		this.finished = 0;
+		this.encoder.reset(hard);
 	};
-	Recorder.prototype.getRecording = function(){
-		if(this.flushed){ return Promise.reject(new Error('No recording available.')); }
-		this.flushed = true;
-		return this.encoder.end();
+	
+	Recorder.prototype.finish = function(){
+		var that = this,
+			endp = this.encoder.end();
+		endp.then(function(arr){
+			var frame = arr[0],
+				blob = arr[1];
+			that.finished++;
+			that.emit('data', arr[0]);
+			that.emit('end', arr[1]);
+		});
+		return endp.then(function(arr){ return arr[1]; });
 	};
 	
 	return Recorder;
