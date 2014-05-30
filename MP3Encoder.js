@@ -15,7 +15,7 @@ var MP3Encoder = (function(){
 		switch(data.cmd){
 		case 'data':
 			if(!this.stream){ this.buffers.push(data.mp3data); }
-			this.pq.shift().resolve(this);
+			this.pq.shift().resolve(data.mp3data);
 			break;
 		case 'end':
 			if(this.stream){
@@ -94,10 +94,10 @@ var MP3Encoder = (function(){
 		this.worker = new EncoderWorker(this);
 	};
 
-	MP3Encoder.prototype.encode = function(channels){
+	MP3Encoder.prototype.encode = function(inputs){
 		return this.worker.msg({
 			cmd: 'encode',
-			channels: channels.slice(0,this.channels)
+			inputs: inputs.slice(0,this.channels)
 		});
 	};
 
@@ -142,7 +142,7 @@ var MP3Encoder = (function(){
 				codec = newEncoder();
 				break;
 			case 'encode':
-				mp3data = encode(codec, data.channels);
+				mp3data = encode(codec, data.inputs);
 				self.postMessage({cmd: 'data', mp3data: mp3data},[mp3data]);
 				break;
 			case 'end':

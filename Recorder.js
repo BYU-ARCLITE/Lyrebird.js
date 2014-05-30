@@ -27,12 +27,15 @@ var AudioRecorder = (function(){
 		}
 
 		return Promise.all([sp, ep]).then(function(arr){
-			var btcv, resampler,
+			var resampler,
 				source = arr[0],
 				encoder = arr[1];
 
 			if(source.channels !== encoder.channels){
 				throw new Error("Channel Mismatch.");
+			}
+			if(source.bitrate !== encoder.bitrate){
+				throw new Error("Bit Depth Mismatch.");
 			}
 			if(!arrayTypes.hasOwnProperty(source.bitrate)){
 				throw new Error("Invalid Source Bitrate.");
@@ -41,18 +44,12 @@ var AudioRecorder = (function(){
 				throw new Error("Invalid Encoder Bitrate.");
 			}
 
-			btcv = (source.bitrate === encoder.bitrate)?
-				function(buf){ return buf; }:
-				(function(cons){
-					return function(buf){ return new cons(buf); };
-				}(arrayTypes[encoder.bitrate]));
-
 			if(source.samplerate === encoder.samplerate){
 				//No resampling required
 				source.pipe(function(inputs){
 					if(!that.recording){ return; }
 					that.queued++;
-					encoder.encode(inputs.map(btcv))
+					encoder.encode(inputs)
 					.then(enc_suc,enc_err);
 				});
 			}else{
@@ -63,31 +60,15 @@ var AudioRecorder = (function(){
 					to: encoder.samplerate,
 					bufferSize: encoder.bufferSize
 				});
-
-				//Resample at the lower bitrate for better memory usage
-				if(source.bitrate < encoder.bitrate){
-					resampler.on('data',function(){
-						that.queued++;
-						//up-convert bit depth after resampling
-						encoder.encode(inputs.map(btcv))
-						.then(enc_suc,enc_err);
-					});
-					source.pipe(function(inputs){
-						if(!that.recording){ return; }
-						resampler.append(inputs);
-					});
-				}else{
-					resampler.on('data',function(inputs){
-						that.queued++;
-						encoder.encode(inputs)
-						.then(enc_suc,enc_err);
-					});
-					source.pipe(function(inputs){
-						if(!that.recording){ return; }
-						//down-convert bit depth before resampling
-						resampler.append(inputs.map(btcv));
-					});
-				}
+				resampler.on('data',function(inputs){
+					that.queued++;
+					encoder.encode(inputs)
+					.then(enc_suc,enc_err);
+				});
+				source.pipe(function(inputs){
+					if(!that.recording){ return; }
+					resampler.append(inputs);
+				});
 			}
 
 			that.source = source;

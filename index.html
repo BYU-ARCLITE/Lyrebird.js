@@ -56,6 +56,7 @@ init.addEventListener('click',function(){
 	sourcep.then(function(source){
 		var encoder = new MP3Encoder({
 			//samplerate: source.samplerate,
+			bitrate: 32,
 			channels: source.channels
 		});
 		__log('Microphone initialised.');
@@ -63,12 +64,12 @@ init.addEventListener('click',function(){
 		return (new AudioRecorder(source,encoder)).then(function(r){
 			__log('Recorder initialised.');
 			recorder = r;
-			recorder.on('data',function(){
+			recorder.on('data',function(data){
 				console.log("Finished",recorder.finished,"of",recorder.queued);
 			});
 			start.disabled = false;
 		});
-	},function(err){
+	}).then(void 0,function(err){
 		init.disabled = false;
 		__log(err.message || err);
 		console.log(err.message);
