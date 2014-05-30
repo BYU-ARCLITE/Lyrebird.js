@@ -7,23 +7,27 @@
 		ul { list-style: none; }
 		#recordingslist audio { display: block; margin-bottom: 10px; }
 	</style>
-	<script src="Encoder.js"></script>
+	<script src="MicrophoneSource.js"></script>
+	<script src="MP3Encoder.js"></script>
+	<script src="Resampler.js"></script>
 	<script src="Recorder.js"></script>
 </head>
 <body>
   <h1>Record to MP3 Test</h1>
 
-  <button id="start">record</button>
+  <button id="init">initialize</button>
+  <button id="start" disabled>record</button>
   <button id="stop" disabled="">stop</button>
   <h2>Recordings</h2>
   <ul id="reclist"></ul>
-  
+
   <h2>Log</h2>
   <pre id="log"></pre>
 <script>
 MP3Encoder.LAME_URI = "http://localhost/AudioRecord/libmp3lame.js";
 
-var stopper = {},
+var recorder,
+	init = document.getElementById('init'),
 	start = document.getElementById('start'),
 	stop = document.getElementById('stop'),
 	log = document.getElementById('log'),
@@ -31,25 +35,42 @@ var stopper = {},
 
 function __log(e, data) {
 	log.innerHTML += "\n" + e + " " + (data || '');
-}	
+}
 
-stop.addEventListener('click',stopper,false);
 start.addEventListener('click',function(){
 	start.disabled = true;
-	(new AudioRecorder(MP3Encoder,{channels:1})).then(function(recorder){
-		__log('Recorder initialised.');
-		stop.disabled = false;
-		recorder.record();
-		stopper.handleEvent = function(){
-			__log('Stopped recording.');
-			stop.disabled = true;
-			recorder.pause();
-			recorder.getRecording().then(download);
+	stop.disabled = false;
+	recorder.record();
+	__log('Started recording.');
+},false);
+stop.addEventListener('click',function(){
+	stop.disabled = true;
+	start.disabled = false;
+	recorder.pause();
+	recorder.finish().then(download);
+	__log('Stopped recording.');
+},false);
+init.addEventListener('click',function(){
+	var sourcep = (new MicrophoneSource({bufferSize:4096}));
+	init.disabled = true;
+	sourcep.then(function(source){
+		var encoder = new MP3Encoder({
+			//samplerate: source.samplerate,
+			channels: source.channels
+		});
+		__log('Microphone initialised.');
+		__log('Encoder initialised.');
+		return (new AudioRecorder(source,encoder)).then(function(r){
+			__log('Recorder initialised.');
+			recorder = r;
+			recorder.on('data',function(){
+				console.log("Finished",recorder.finished,"of",recorder.queued);
+			});
 			start.disabled = false;
-		};
+		});
 	},function(err){
-		start.disabled = false;
-		__log(err.message);
+		init.disabled = false;
+		__log(err.message || err);
 		console.log(err.message);
 		console.log(err.stack);
 	});
@@ -57,10 +78,10 @@ start.addEventListener('click',function(){
 
 function download(blob){
 	var li, link, name;
-	
+
 	__log("Done converting to Mp3");
 	name = 'audio_recording_' + new Date().getTime() + '.mp3';
-	
+
     link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = name;
