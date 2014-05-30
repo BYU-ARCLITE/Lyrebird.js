@@ -1,13 +1,13 @@
 var MP3Encoder = (function(){
 	"use strict";
-	
+
 	var workerURL = URL.createObjectURL(
 		new Blob(
 			['(' + workerFn.toString() + ')();'],
 			{type: "text/javascript"}
 		)
 	);
-	
+
 	function dispatchMessages(e){
 		var data = e.data;
 		switch(data.cmd){
@@ -26,7 +26,7 @@ var MP3Encoder = (function(){
 			this.buffers = [];
 		}
 	}
-	
+
 	function EncoderWorker(encoder){
 		var that = this,
 			worker = new Worker(workerURL);
@@ -42,13 +42,13 @@ var MP3Encoder = (function(){
 			samplerate: encoder.samplerate,
 			bitrate: encoder.bitrate
 		});
-		
+
 		this.worker = worker;
 		this.stream = encoder.stream;
 		this.buffers = [];
 		this.pq = [];
 	}
-	
+
 	EncoderWorker.prototype.msg = function(msg){
 		var that = this;
 		return new Promise(function(resolve, reject){
@@ -59,13 +59,13 @@ var MP3Encoder = (function(){
 			});
 		});
 	};
-	
+
 	EncoderWorker.prototype.terminate = function(){
 		this.pq.forEach(function(p){ p.reject(new Error('Worker Terminated.')); });
 		this.worker.terminate();
 	};
-	
-	function MP3Encoder(opts){ //channels, samplerate, bitrate, stream		
+
+	function MP3Encoder(opts){ //channels, samplerate, bitrate, stream
 		if(typeof opts !== 'object'){ opts = {}; }
 
 		this.stream = !!opts.stream;
@@ -74,22 +74,22 @@ var MP3Encoder = (function(){
 		this.channels = opts.channels === 1?1:2;
 		this.worker = new EncoderWorker(this);
 	}
-	
+
 	MP3Encoder.LAME_URI =	location.protocol + "//" + location.hostname +
 						(location.port && ":" + location.port) + "/js/libmp3lame.js";
-	
+
 	MP3Encoder.prototype.reset = function(hard){
 		if(hard){ this.worker.terminate(); }
 		this.worker = new EncoderWorker(this);
 	};
-	
+
 	MP3Encoder.prototype.encode = function(channels){
 		return this.worker.msg({
 			cmd: 'encode',
 			channels: channels.slice(0,this.channels)
 		});
 	};
-	
+
 	MP3Encoder.prototype.end = function(){
 		return this.worker.msg({cmd: 'end'});
 	};
@@ -98,7 +98,7 @@ var MP3Encoder = (function(){
 		"use strict";
 		var codec, encode, channels,
 			samplerate, bitrate;
-		
+
 		function monoEncode(mp3codec,chans){
 			return Lame.encode_buffer_ieee_float(mp3codec, chans[0], chans[0]).data.buffer;
 		}
@@ -106,7 +106,7 @@ var MP3Encoder = (function(){
 		function stereoEncode(mp3codec,chans){
 			return Lame.encode_buffer_ieee_float(mp3codec, chans[0], chans[1]).data.buffer;
 		}
-		
+
 		function newEncoder(){
 			var mp3codec = Lame.init();
 			Lame.set_mode(mp3codec, channels === 1?Lame.MONO:Lame.JOINT_STEREO);

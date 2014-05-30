@@ -92,7 +92,7 @@ var Resampler = (function(){
 
 	function workerFn(){
 		"use strict";
-		var resampler = null,
+		var alg = null,
 			buffers = null,
 			excessLength = 0,
 			channels,
@@ -115,7 +115,7 @@ var Resampler = (function(){
 				olen = data.outLength;
 				buffers = [];
 				for(i = 0; i < channels; ++i){ buffers.push(new cons(olen)); }
-				resampler = new (ratio < 1?UpSampler:DownSampler)(ratio, channels);
+				alg = new Algorithm(ratio, channels);
 				break;
 			case "exec":
 				len = Math.min.apply(Math, data.inputs.map(function(a){ return a.length; }));
@@ -123,44 +123,48 @@ var Resampler = (function(){
 				break;
 			case "flush":
 				Flush();
+				alg.reset();
 				break;
 			}
 		},false);
 
 		//Re-use the same output buffers over and over,
-		//copying them to the main thread when they become full
+		//copying them to the main thread when they become
+		//full, until we exhaust the available input
 		function Exec(inArrays, inLength){
-			var offsets, index,
+			var offsets,
+				outOffset, inOffset,
 				outArrays, outLength;
 
 			//Acquire output arrays
 			if(excessLength > 0){
 				outLength = excessLength;
-				index = olen - excessLength;
-				outArrays = buffers.map(function(b){ return b.subarray(index); });
+				outOffset = olen - excessLength;
+				outArrays = buffers.map(function(b){ return b.subarray(outOffset); });
 			}else{
 				outLength = olen;
 				outArrays = buffers;
 			}
 
 			do {
-				offsets = resampler.exec(inLength, outLength, inArrays, outArrays);
-				if(offsets.outputOffset === outLength){ //Filled the output buffers
+				offsets = alg.exec(inLength, outLength, inArrays, outArrays);
+				outOffset = offsets.outputOffset;
+				inOffset = offsets.inputOffset;
 
+				if(outOffset >= outLength){
 					//copy output buffers to main thread
 					self.postMessage(buffers);
-					excessLength = 0;
+					//reset output arrays
+					outLength = olen;
+					outArrays = buffers;
+				}
 
-					//If we exhausted the input, we're done.
-					if(offsets.inputOffset === inLength){ break; }
-					else{ //Otherwise, shift the inputs and reset the output arrays
-						outArrays = buffers;
-						inLength -= offsets.inputOffset;
-						inArrays = inArrays.map(function(a){ return a.subarray(offsets.inputOffset); });
-					}
-				}else{ break; }
+				if(inOffset >= inLength){ break; } //input was exhausted
+				//Otherwise, shift the inputs
+				inLength -= inOffset;
+				inArrays = inArrays.map(function(a){ return a.subarray(inOffset); });
 			}while(true);
-			excessLength = outLength - offsets.outputOffset;
+			excessLength = outLength - outOffset;
 		}
 
 		function Flush(){
@@ -174,70 +178,76 @@ var Resampler = (function(){
 			}
 		}
 
-		function DownSampler(ratio,channels){
+		function Algorithm(ratio,channels){
 			this.channels = channels;
 			this.ratio = ratio;
 			this.lastWeight = 0;
-			this.tailExists = false;
 			this.lastOutput = new Float64Array(channels);
-			//TODO: create mono-optimized version
+			//TODO: create mono-optimized versions
+			this.exec = ratio < 1?LinearInterp:FractionalMean;
 		}
 
-		DownSampler.prototype.exec = MultiTapResample;
+		Algorithm.prototype.reset = function(){
+			var i;
+			this.lastWeight = 0;
+			for(i = 0; i < this.channels; ++i){
+				this.lastOutput[i] = 0;
+			}
+		};
 
-		/* 
+		/*
 		 * Each output sample consists of the sum of some window of input samples,
 		 * plus some fraction of a prior sample and some fraction of a following
 		 * sample, all scaled according to the resampling ratio.
 		 */
-		function MultiTapResample(inLength, outLength, inBuffers, outBuffers) {
-			var ratioWeight = this.ratio,
+		function FractionalMean(inLength, outLength, inBuffers, outBuffers) {
+			var ratio = this.ratio,
 				lastOutput = this.lastOutput,
 				channels = this.channels,
-				preFraction = 1,
 				inputOffset = 0,
 				outputOffset = 0,
 				buffer, weight,
+				postWeight, preWeight,
 				start, sum, c, i;
 
 			if (inLength > 0 && outLength > 0){
-				//This will only be set to ratioWeight if we are
-				//processing the first frame, in which case we rely
-				//on lastOutput having been previously zero-initialized
-				weight = this.tailExists?this.lastWeight:ratioWeight;
-				do {
-					if (weight >= preFraction) {
-						for(c = 0; c < channels; ++c){ lastOutput[c] += inBuffers[c][inputOffset] * preFraction; }
-						weight -= preFraction;
-						start = inputOffset + 1;
-						inputOffset = Math.min(start + Math.floor(weight), inLength);
-						for(c = 0; c < channels; ++c){
-							buffer = inBuffers[c];
-							for (sum = 0, i = start; i < inputOffset; ++i) { sum += buffer[i];	}
-							lastOutput[c] += sum;
-						}
-						weight -= (inputOffset - start);
+
+				weight = (this.lastWeight >= 1)?this.lastWeight:(ratio - this.lastWeight);
+				start = inputOffset;
+				inputOffset = Math.min(start + Math.floor(weight), inLength);
+				postWeight = weight - (inputOffset - start);
+
+				while(postWeight < 1 && outputOffset < outLength && inputOffset < inLength) {
+					//we can produce a complete output sample
+					preWeight = 1-postWeight;
+					//Do one channel at a time to optimize data locality
+					for(c = 0; c < channels; ++c){
+						buffer = inBuffers[c];
+						sum = lastOutput[c]; //partial prior sample
+						//Sum intermediate full samples
+						for (i = start; i < inputOffset; ++i) { sum += buffer[i];	}
+						//add partial following sample and normalize
+						outBuffers[c][outputOffset] = (sum + buffer[i] * postWeight) / ratio;
+						//setup prior partials for the next iteration
+						lastOutput[c] = (preWeight < 1)?buffer[i] * preWeight:0;
 					}
-					//Note: weight can never go negative, as (inputOffset - start)
-					//can never be larger than floor(weight)
-					if (weight === 0) { break; }
-					if (inputOffset >= inLength || outputOffset+1 >= outLength) {
-						for(c = 0; c < channels; ++c){ lastOutput[c] += inBuffers[c][inputOffset] * weight; }
-						break;
-					} else {
-						for(c = 0; c < channels; ++c){
-							outBuffers[c][outputOffset] = (lastOutput[c] + inBuffers[c][inputOffset] * weight) / ratioWeight;
-							lastOutput[c] = 0;
-						}
-						//Setup the next iteration of the loop
-						preFraction = 1 - weight;
-						weight = ratioWeight;
-						outputOffset++;
-					}
-				} while (true);
-				outputOffset++;
-				this.lastWeight = weight;
-				this.tailExists = true;
+
+					weight = ratio - preWeight;
+					start = inputOffset+1;
+					inputOffset = Math.min(start + Math.floor(weight), inLength);
+					postWeight = weight - (inputOffset - start);
+
+					outputOffset++;
+				}
+				//produce partial samples
+				this.lastWeight = postWeight;
+				for(c = 0; c < channels; ++c){
+					buffer = inBuffers[c];
+					sum = lastOutput[c]; //partial prior sample
+					//Get as many full input samples as we can
+					for (sum = 0, i = start; i < inputOffset; ++i) { sum += buffer[i];	}
+					lastOutput[c] = sum;
+				}
 			}
 			return {
 				inputOffset: inputOffset,
@@ -245,14 +255,7 @@ var Resampler = (function(){
 			};
 		}
 
-		function UpSampler(ratio, channels){
-			this.channels = channels;
-			this.ratio = ratio;
-			this.lastWeight = 0;
-			this.lastOutput = new Float64Array(channels);
-		}
-
-		function LinearInterpResample(inLength, outLength, inBuffers, outBuffers) {
+		function LinearInterp(inLength, outLength, inBuffers, outBuffers) {
 			var ratioWeight = this.ratio,
 				lastOutput = this.lastOutput,
 				channels = this.channels,

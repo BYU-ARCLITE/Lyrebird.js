@@ -20,7 +20,7 @@
   <button id="stop" disabled="">stop</button>
   <h2>Recordings</h2>
   <ul id="reclist"></ul>
-  
+
   <h2>Log</h2>
   <pre id="log"></pre>
 <script>
@@ -35,7 +35,7 @@ var recorder,
 
 function __log(e, data) {
 	log.innerHTML += "\n" + e + " " + (data || '');
-}	
+}
 
 start.addEventListener('click',function(){
 	start.disabled = true;
@@ -51,7 +51,7 @@ stop.addEventListener('click',function(){
 	__log('Stopped recording.');
 },false);
 init.addEventListener('click',function(){
-	var sourcep = (new MicrophoneSource);
+	var sourcep = (new MicrophoneSource({bufferSize:4096}));
 	init.disabled = true;
 	sourcep.then(function(source){
 		var encoder = new MP3Encoder({
@@ -60,28 +60,28 @@ init.addEventListener('click',function(){
 		});
 		__log('Microphone initialised.');
 		__log('Encoder initialised.');
-		(new AudioRecorder(source,encoder)).then(function(r){
+		return (new AudioRecorder(source,encoder)).then(function(r){
 			__log('Recorder initialised.');
 			recorder = r;
 			recorder.on('data',function(){
 				console.log("Finished",recorder.finished,"of",recorder.queued);
 			});
 			start.disabled = false;
-		},function(err){
-			init.disabled = false;
-			__log(err.message || err);
-			console.log(err.message);
-			console.log(err.stack);
 		});
+	},function(err){
+		init.disabled = false;
+		__log(err.message || err);
+		console.log(err.message);
+		console.log(err.stack);
 	});
 },false);
 
 function download(blob){
 	var li, link, name;
-	
+
 	__log("Done converting to Mp3");
 	name = 'audio_recording_' + new Date().getTime() + '.mp3';
-	
+
     link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = name;

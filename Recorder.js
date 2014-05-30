@@ -6,31 +6,31 @@ var AudioRecorder = (function(){
 		32: Float32Array,
 		64: Float64Array
 	};
-	
+
 	function Recorder(sp,ep){
 		var that = this;
-		
+
 		this.events = {};
 		this.recording = false;
 		this.source = null;
 		this.encoder = null;
 		this.queued = 1;
 		this.finished = 0;
-		
+
 		function enc_suc(data){
 			that.finished++;
 			that.emit('data',data);
 		}
-		
+
 		function enc_err(err){
 			that.emit('error',err);
 		}
-		
+
 		return Promise.all([sp, ep]).then(function(arr){
 			var btcv, resampler,
 				source = arr[0],
 				encoder = arr[1];
-				
+
 			if(source.channels !== encoder.channels){
 				throw new Error("Channel Mismatch.");
 			}
@@ -40,13 +40,13 @@ var AudioRecorder = (function(){
 			if(!arrayTypes.hasOwnProperty(encoder.bitrate)){
 				throw new Error("Invalid Encoder Bitrate.");
 			}
-			
+
 			btcv = (source.bitrate === encoder.bitrate)?
 				function(buf){ return buf; }:
 				(function(cons){
 					return function(buf){ return new cons(buf); };
 				}(arrayTypes[encoder.bitrate]));
-			
+
 			if(source.samplerate === encoder.samplerate){
 				//No resampling required
 				source.pipe(function(inputs){
@@ -56,8 +56,14 @@ var AudioRecorder = (function(){
 					.then(enc_suc,enc_err);
 				});
 			}else{
-				resampler = new Resampler(source.samplerate, encoder.samplerate, encoder.bufsize, encoder.channels, source.bitrate);
-				
+				resampler = new Resampler({
+					channels: source.channels,
+					bitrate: source.bitrate,
+					from: source.samplerate,
+					to: encoder.samplerate,
+					bufferSize: encoder.bufferSize
+				});
+
 				//Resample at the lower bitrate for better memory usage
 				if(source.bitrate < encoder.bitrate){
 					resampler.on('data',function(){
@@ -83,7 +89,7 @@ var AudioRecorder = (function(){
 					});
 				}
 			}
-			
+
 			that.source = source;
 			that.encoder = encoder;
 			return that;
@@ -97,35 +103,35 @@ var AudioRecorder = (function(){
 			this.events[ename].push(handler);
 		}
 	};
-	
+
 	Recorder.prototype.off = function(ename, handler){
 		var i, evlist = this.events[ename];
 		if(!evlist){ return; }
 		i = evlist.indexOf(handler);
 		if(~i){ evlist.splice(i,1); }
 	};
-	
+
 	Recorder.prototype.emit = function(ename, obj){
 		var evlist = this.events[ename];
 		if(!evlist){ return; }
 		evlist.forEach(function(h){ h.call(this, obj); }, this);
 	};
-	
+
 	Recorder.prototype.record = function(){
 		this.recording = true;
 	};
-	
+
 	Recorder.prototype.pause = function(){
 		this.recording = false;
 	};
-	
+
 	Recorder.prototype.reset = function(hard){
 		this.recording = false;
 		this.queued = 1;
 		this.finished = 0;
 		this.encoder.reset(hard);
 	};
-	
+
 	Recorder.prototype.finish = function(){
 		var that = this,
 			endp = this.encoder.end();
@@ -138,7 +144,7 @@ var AudioRecorder = (function(){
 		});
 		return endp.then(function(arr){ return arr[1]; });
 	};
-	
+
 	return Recorder;
 
 }());
