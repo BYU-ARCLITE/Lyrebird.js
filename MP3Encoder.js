@@ -8,6 +8,8 @@ var MP3Encoder = (function(){
 		)
 	);
 
+	var sampleRates = [ 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000 ];
+
 	function dispatchMessages(e){
 		var data = e.data;
 		switch(data.cmd){
@@ -65,12 +67,21 @@ var MP3Encoder = (function(){
 		this.worker.terminate();
 	};
 
+	function nearestSampleRate(rate){
+		rate = +rate; //make sure it's a number
+		if(!rate){ return 44100; }
+		if(~sampleRates.indexOf(rate)){ return rate; }
+		sampleRates.sort(function(a,b){
+			return Math.abs(a-rate) < Math.abs(b-rate) ? -1 : 1;
+		});
+		return sampleRates[0];
+	}
+
 	function MP3Encoder(opts){ //channels, samplerate, bitrate, stream
 		if(typeof opts !== 'object'){ opts = {}; }
-
 		this.stream = !!opts.stream;
 		this.bitrate = 32;
-		this.samplerate = +opts.samplerate || 44100;
+		this.samplerate = nearestSampleRate(opts.samplerate);
 		this.channels = opts.channels === 1?1:2;
 		this.worker = new EncoderWorker(this);
 	}
