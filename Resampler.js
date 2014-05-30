@@ -29,6 +29,8 @@ var Resampler = (function(){
 			throw new Error("Invalid Resampler Settings");
 		}
 
+		//TODO: Implement Reset properly
+
 		this.events = {};
 		if (fromRate === toRate) {
 			//Bypass- copy inputs to outputs of the appropriate type
@@ -41,6 +43,7 @@ var Resampler = (function(){
 				for(i = 0; i < channels; ++i){ buffers.push(new ArrayBuffer(0)); }
 				this.emit('data',buffers);
 			};
+			this.reset = function(){};
 		} else {
 			worker = new Worker(blobURL);
 			worker.postMessage({
@@ -64,6 +67,7 @@ var Resampler = (function(){
 				});
 			};
 			this.flush = function(){ worker.postMessage({cmd: "flush"}); };
+			this.reset = function(){};
 		}
 	}
 

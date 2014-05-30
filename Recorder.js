@@ -7,6 +7,58 @@ var AudioRecorder = (function(){
 		64: Float64Array
 	};
 
+	function Int8toInt16(source){
+		var i, len = source.length,
+			dest = new Int16Array(len);
+		for(i = 0; i < len; i++){ dest[i] = source[i] << 8; }
+		return dest;
+	}
+
+	function Int16toInt8(source){
+		var i, len = source.length,
+			dest = new Int8Array(len);
+		for(i = 0; i < len; i++){ dest[i] = source[i] >> 8; }
+		return dest;
+	}
+
+	function IntToFloat(dtype,max){
+		return function(source){
+			var i, len = source.length,
+				dest = new dtype(len);
+			for(i = 0; i < len; i++){ dest[i] = source[i] / max; }
+			return dest;
+		};
+	}
+
+	function FloatToInt(dtype,max){
+		return function(source){
+			var i, len = source.length,
+				dest = new dtype(len);
+			for(i = 0; i < len; i++){ dest[i] = Math.round(source[i] * max); }
+			return dest;
+		};
+	}
+
+	function calcDepthConversion(from,to){
+		if(from === to){ return function(a){ return a; }; }
+		switch(from){
+		case 8:
+			if(to === 16){ return Int8toInt16; }
+			return IntToFloat(to === 32?Float32Array:Float64Array, 128);
+		case 16:
+			if(to === 8){ return Int16toInt8; }
+			return IntToFloat(to === 32?Float32Array:Float64Array, 32768);
+		case 32:
+			if(to === 8){ return FloatToInt(Int8Array, 128); }
+			if(to === 16){ return FloatToInt(Int16Array, 32768); }
+			return function(source){ return new Float64Array(source); };
+		case 64:
+			if(to === 8){ return FloatToInt(Int8Array, 128); }
+			if(to === 16){ return FloatToInt(Int16Array, 32768); }
+			return function(source){ return new Float32Array(source); };
+		}
+	}
+
 	function Recorder(sp,ep){
 		var that = this;
 
@@ -14,6 +66,7 @@ var AudioRecorder = (function(){
 		this.recording = false;
 		this.source = null;
 		this.encoder = null;
+		this.resampler = null;
 		this.queued = 1;
 		this.finished = 0;
 
@@ -27,15 +80,12 @@ var AudioRecorder = (function(){
 		}
 
 		return Promise.all([sp, ep]).then(function(arr){
-			var resampler,
+			var dconv, resampler,
 				source = arr[0],
 				encoder = arr[1];
 
 			if(source.channels !== encoder.channels){
 				throw new Error("Channel Mismatch.");
-			}
-			if(source.bitrate !== encoder.bitrate){
-				throw new Error("Bit Depth Mismatch.");
 			}
 			if(!arrayTypes.hasOwnProperty(source.bitrate)){
 				throw new Error("Invalid Source Bitrate.");
@@ -44,18 +94,13 @@ var AudioRecorder = (function(){
 				throw new Error("Invalid Encoder Bitrate.");
 			}
 
-			if(source.samplerate === encoder.samplerate){
-				//No resampling required
-				source.pipe(function(inputs){
-					if(!that.recording){ return; }
-					that.queued++;
-					encoder.encode(inputs)
-					.then(enc_suc,enc_err);
-				});
-			}else{
+			dconv = calcDepthConversion(source.bitrate,encoder.bitrate);
+
+			//resample at the lower bitrate to save memory
+			if(source.bitrate < encoder.bitrate){
 				resampler = new Resampler({
 					channels: source.channels,
-					bitrate: source.bitrate,
+					bitrate: encoder.bitrate,
 					from: source.samplerate,
 					to: encoder.samplerate,
 					bufferSize: encoder.bufferSize
@@ -67,12 +112,32 @@ var AudioRecorder = (function(){
 				});
 				source.pipe(function(inputs){
 					if(!that.recording){ return; }
+					//convert to encoder bitrate before resampling
+					resampler.append(inputs.map(dconv));
+				});
+			}else{
+				resampler = new Resampler({
+					channels: source.channels,
+					bitrate: source.bitrate,
+					from: source.samplerate,
+					to: encoder.samplerate,
+					bufferSize: encoder.bufferSize
+				});
+				resampler.on('data',function(inputs){
+					that.queued++;
+					//convert to encoder bitrate after resampling
+					encoder.encode(inputs.map(dconv))
+					.then(enc_suc,enc_err);
+				});
+				source.pipe(function(inputs){
+					if(!that.recording){ return; }
 					resampler.append(inputs);
 				});
 			}
 
 			that.source = source;
 			that.encoder = encoder;
+			that.resampler = resampler;
 			return that;
 		});
 	}
@@ -110,10 +175,12 @@ var AudioRecorder = (function(){
 		this.recording = false;
 		this.queued = 1;
 		this.finished = 0;
+		this.resampler.reset(true);
 		this.encoder.reset(hard);
 	};
 
 	Recorder.prototype.finish = function(){
+		//TODO: Make sure resmapler is flushed
 		var that = this,
 			endp = this.encoder.end();
 		endp.then(function(arr){
